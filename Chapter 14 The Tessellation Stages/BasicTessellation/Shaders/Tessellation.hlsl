@@ -1,82 +1,32 @@
-//***************************************************************************************
-// Tessellation.hlsl by Frank Luna (C) 2015 All Rights Reserved.
-//***************************************************************************************
-
-
-// Include structures and functions for lighting.
-#include "LightingUtil.hlsl"
-
-Texture2D    gDiffuseMap : register(t0);
-
-
-SamplerState gsamPointWrap        : register(s0);
-SamplerState gsamPointClamp       : register(s1);
-SamplerState gsamLinearWrap       : register(s2);
-SamplerState gsamLinearClamp      : register(s3);
-SamplerState gsamAnisotropicWrap  : register(s4);
-SamplerState gsamAnisotropicClamp : register(s5);
 
 // Constant data that varies per frame.
 cbuffer cbPerObject : register(b0)
 {
 	float4x4 gWorld;
-	float4x4 gTexTransform;
 };
 
 // Constant data that varies per material.
 cbuffer cbPass : register(b1)
 {
-	float4x4 gView;
-	float4x4 gInvView;
-	float4x4 gProj;
-	float4x4 gInvProj;
 	float4x4 gViewProj;
-	float4x4 gInvViewProj;
 	float3 gEyePosW;
-	float cbPerObjectPad1;
-	float2 gRenderTargetSize;
-	float2 gInvRenderTargetSize;
-	float gNearZ;
-	float gFarZ;
-	float gTotalTime;
-	float gDeltaTime;
-	float4 gAmbientLight;
-
-	float4 gFogColor;
-	float gFogStart;
-	float gFogRange;
-	float2 cbPerObjectPad2;
-
-	// Indices [0, NUM_DIR_LIGHTS) are directional lights;
-	// indices [NUM_DIR_LIGHTS, NUM_DIR_LIGHTS+NUM_POINT_LIGHTS) are point lights;
-	// indices [NUM_DIR_LIGHTS+NUM_POINT_LIGHTS, NUM_DIR_LIGHTS+NUM_POINT_LIGHT+NUM_SPOT_LIGHTS)
-	// are spot lights for a maximum of MaxLights per object.
-	Light gLights[MaxLights];
-};
-
-cbuffer cbMaterial : register(b2)
-{
-	float4   gDiffuseAlbedo;
-	float3   gFresnelR0;
-	float    gRoughness;
-	float4x4 gMatTransform;
 };
 
 struct VertexIn
 {
-	float3 PosL    : POSITION;
+	float3 PosL    : location;
 };
 
 struct VertexOut
 {
-	float3 PosL    : POSITION;
+	float4 PosL    : SV_Position;
 };
 
 VertexOut VS(VertexIn vin)
 {
 	VertexOut vout;
 	
-	vout.PosL = vin.PosL;
+	vout.PosL = float4(vin.PosL, 1);
 
 	return vout;
 }
@@ -87,11 +37,15 @@ struct PatchTess
 	float InsideTess[2] : SV_InsideTessFactor;
 };
 
-PatchTess ConstantHS(InputPatch<VertexOut, 4> patch, uint patchID : SV_PrimitiveID)
+PatchTess ConstantHS(InputPatch<VertexOut, 4> patch)
 {
 	PatchTess pt;
 	
-	float3 centerL = 0.25f*(patch[0].PosL + patch[1].PosL + patch[2].PosL + patch[3].PosL);
+	float3 p0 = patch[0].PosL.xyz;
+	float3 p1 = patch[1].PosL.xyz;
+	float3 p2 = patch[2].PosL.xyz;
+	float3 p3 = patch[3].PosL.xyz;
+	float3 centerL = 0.25f*(p0 + p1 + p2 + p3);
 	float3 centerW = mul(float4(centerL, 1.0f), gWorld).xyz;
 	
 	float d = distance(centerW, gEyePosW);
@@ -119,7 +73,7 @@ PatchTess ConstantHS(InputPatch<VertexOut, 4> patch, uint patchID : SV_Primitive
 
 struct HullOut
 {
-	float3 PosL : POSITION;
+	float4 PosL : SV_Position;
 };
 
 [domain("quad")]
@@ -129,8 +83,7 @@ struct HullOut
 [patchconstantfunc("ConstantHS")]
 [maxtessfactor(64.0f)]
 HullOut HS(InputPatch<VertexOut, 4> p, 
-           uint i : SV_OutputControlPointID,
-           uint patchId : SV_PrimitiveID)
+           uint i : SV_OutputControlPointID)
 {
 	HullOut hout;
 	
@@ -141,7 +94,7 @@ HullOut HS(InputPatch<VertexOut, 4> p,
 
 struct DomainOut
 {
-	float4 PosH : SV_POSITION;
+	float4 PosH : SV_Position;
 };
 
 // The domain shader is called for every vertex created by the tessellator.  
@@ -154,8 +107,8 @@ DomainOut DS(PatchTess patchTess,
 	DomainOut dout;
 	
 	// Bilinear interpolation.
-	float3 v1 = lerp(quad[0].PosL, quad[1].PosL, uv.x); 
-	float3 v2 = lerp(quad[2].PosL, quad[3].PosL, uv.x); 
+	float3 v1 = lerp(quad[0].PosL.xyz, quad[1].PosL.xyz, uv.x); 
+	float3 v2 = lerp(quad[2].PosL.xyz, quad[3].PosL.xyz, uv.x); 
 	float3 p  = lerp(v1, v2, uv.y); 
 	
 	// Displacement mapping

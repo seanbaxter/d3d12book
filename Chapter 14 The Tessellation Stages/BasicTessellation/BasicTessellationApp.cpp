@@ -17,6 +17,25 @@ using namespace DirectX::PackedVector;
 
 const int gNumFrameResources = 3;
 
+static std::vector<char> load_file(const char* path) {
+	FILE* f = fopen(path, "rb");
+	if (!f) {
+		printf("Could not open file %s\n", path);
+		exit(1);
+	}
+	fseek(f, 0, SEEK_END);
+	long len = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	std::vector<char> data(len);
+	fread(data.data(), 1, len, f);
+	fclose(f);
+	return data;
+}
+
+D3D12_SHADER_BYTECODE get_bytecode(std::vector<char>& vec) {
+	return { vec.data(), vec.size() };
+}
+
 // Lightweight structure stores parameters to draw a shape.  This will
 // vary from app-to-app.
 struct RenderItem
@@ -80,7 +99,6 @@ private:
 	void UpdateCamera(const GameTimer& gt);
 	void AnimateMaterials(const GameTimer& gt);
 	void UpdateObjectCBs(const GameTimer& gt);
-	void UpdateMaterialCBs(const GameTimer& gt);
 	void UpdateMainPassCB(const GameTimer& gt);
  
 	void LoadTextures();
@@ -113,6 +131,8 @@ private:
 	std::unordered_map<std::string, std::unique_ptr<Texture>> mTextures;
 	std::unordered_map<std::string, ComPtr<ID3DBlob>> mShaders;
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> mPSOs;
+
+	std::unordered_map<std::string, std::vector<char> > shader_data;
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
@@ -240,7 +260,6 @@ void BasicTessellationApp::Update(const GameTimer& gt)
 
 	AnimateMaterials(gt);
 	UpdateObjectCBs(gt);
-	UpdateMaterialCBs(gt);
 	UpdateMainPassCB(gt);
 }
 
@@ -264,8 +283,9 @@ void BasicTessellationApp::Draw(const GameTimer& gt)
 		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
     // Clear the back buffer and depth buffer.
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), (float*)&mMainPassCB.FogColor, 0, nullptr);
-    mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+	float clear_color[]{ .7, .7, .7, 1 };
+  mCommandList->ClearRenderTargetView(CurrentBackBufferView(), clear_color, 0, nullptr);
+  mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
     // Specify the buffers we are going to render to.
     mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
@@ -386,11 +406,9 @@ void BasicTessellationApp::UpdateObjectCBs(const GameTimer& gt)
 		if(e->NumFramesDirty > 0)
 		{
 			XMMATRIX world = XMLoadFloat4x4(&e->World);
-			XMMATRIX texTransform = XMLoadFloat4x4(&e->TexTransform);
-
+			
 			ObjectConstants objConstants;
 			XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
-			XMStoreFloat4x4(&objConstants.TexTransform, XMMatrixTranspose(texTransform));
 
 			currObjectCB->CopyData(e->ObjCBIndex, objConstants);
 
@@ -400,62 +418,13 @@ void BasicTessellationApp::UpdateObjectCBs(const GameTimer& gt)
 	}
 }
 
-void BasicTessellationApp::UpdateMaterialCBs(const GameTimer& gt)
-{
-	auto currMaterialCB = mCurrFrameResource->MaterialCB.get();
-	for(auto& e : mMaterials)
-	{
-		// Only update the cbuffer data if the constants have changed.  If the cbuffer
-		// data changes, it needs to be updated for each FrameResource.
-		Material* mat = e.second.get();
-		if(mat->NumFramesDirty > 0)
-		{
-			XMMATRIX matTransform = XMLoadFloat4x4(&mat->MatTransform);
-
-			MaterialConstants matConstants;
-			matConstants.DiffuseAlbedo = mat->DiffuseAlbedo;
-			matConstants.FresnelR0 = mat->FresnelR0;
-			matConstants.Roughness = mat->Roughness;
-			XMStoreFloat4x4(&matConstants.MatTransform, XMMatrixTranspose(matTransform));
-
-			currMaterialCB->CopyData(mat->MatCBIndex, matConstants);
-
-			// Next FrameResource need to be updated too.
-			mat->NumFramesDirty--;
-		}
-	}
-}
-
 void BasicTessellationApp::UpdateMainPassCB(const GameTimer& gt)
 {
 	XMMATRIX view = XMLoadFloat4x4(&mView);
 	XMMATRIX proj = XMLoadFloat4x4(&mProj);
-
 	XMMATRIX viewProj = XMMatrixMultiply(view, proj);
-	XMMATRIX invView = XMMatrixInverse(&XMMatrixDeterminant(view), view);
-	XMMATRIX invProj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
-	XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj), viewProj);
-
-	XMStoreFloat4x4(&mMainPassCB.View, XMMatrixTranspose(view));
-	XMStoreFloat4x4(&mMainPassCB.InvView, XMMatrixTranspose(invView));
-	XMStoreFloat4x4(&mMainPassCB.Proj, XMMatrixTranspose(proj));
-	XMStoreFloat4x4(&mMainPassCB.InvProj, XMMatrixTranspose(invProj));
 	XMStoreFloat4x4(&mMainPassCB.ViewProj, XMMatrixTranspose(viewProj));
-	XMStoreFloat4x4(&mMainPassCB.InvViewProj, XMMatrixTranspose(invViewProj));
 	mMainPassCB.EyePosW = mEyePos;
-	mMainPassCB.RenderTargetSize = XMFLOAT2((float)mClientWidth, (float)mClientHeight);
-	mMainPassCB.InvRenderTargetSize = XMFLOAT2(1.0f / mClientWidth, 1.0f / mClientHeight);
-	mMainPassCB.NearZ = 1.0f;
-	mMainPassCB.FarZ = 1000.0f;
-	mMainPassCB.TotalTime = gt.TotalTime();
-	mMainPassCB.DeltaTime = gt.DeltaTime();
-	mMainPassCB.AmbientLight = { 0.25f, 0.25f, 0.35f, 1.0f };
-	mMainPassCB.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
-	mMainPassCB.Lights[0].Strength = { 0.6f, 0.6f, 0.6f };
-	mMainPassCB.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
-	mMainPassCB.Lights[1].Strength = { 0.3f, 0.3f, 0.3f };
-	mMainPassCB.Lights[2].Direction = { 0.0f, -0.707f, -0.707f };
-	mMainPassCB.Lights[2].Strength = { 0.15f, 0.15f, 0.15f };
 
 	// Main pass stored in index 2
 	auto currPassCB = mCurrFrameResource->PassCB.get();
@@ -588,14 +557,19 @@ void BasicTessellationApp::BuildDescriptorHeaps()
 
 void BasicTessellationApp::BuildShadersAndInputLayout()
 {
-	mShaders["tessVS"] = d3dUtil::CompileShader(L"Shaders\\Tessellation.hlsl", nullptr, "VS", "vs_5_0");
-	mShaders["tessHS"] = d3dUtil::CompileShader(L"Shaders\\Tessellation.hlsl", nullptr, "HS", "hs_5_0");
-	mShaders["tessDS"] = d3dUtil::CompileShader(L"Shaders\\Tessellation.hlsl", nullptr, "DS", "ds_5_0");
-	mShaders["tessPS"] = d3dUtil::CompileShader(L"Shaders\\Tessellation.hlsl", nullptr, "PS", "ps_5_0");
-	
+	shader_data["tessVS"] = load_file("Shaders\\vert.dxil");
+	shader_data["tessHS"] = load_file("Shaders\\tesc.dxil");
+	shader_data["tessDS"] = load_file("Shaders\\tese.dxil");
+	shader_data["tessPS"] = load_file("Shaders\\frag.dxil");
+
+	shader_data["tessVS2"] = load_file("Shaders\\vert2.dxil");
+	shader_data["tessHS2"] = load_file("Shaders\\tesc2.dxil");
+	shader_data["tessDS2"] = load_file("Shaders\\tese2.dxil");
+	shader_data["tessPS2"] = load_file("Shaders\\frag2.dxil");
+
     mInputLayout =
     {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "location", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 }
 
@@ -654,26 +628,11 @@ void BasicTessellationApp::BuildPSOs()
     ZeroMemory(&opaquePsoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
 	opaquePsoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
 	opaquePsoDesc.pRootSignature = mRootSignature.Get();
-	opaquePsoDesc.VS = 
-	{ 
-		reinterpret_cast<BYTE*>(mShaders["tessVS"]->GetBufferPointer()), 
-		mShaders["tessVS"]->GetBufferSize()
-	};
-	opaquePsoDesc.HS =
-	{
-		reinterpret_cast<BYTE*>(mShaders["tessHS"]->GetBufferPointer()),
-		mShaders["tessHS"]->GetBufferSize()
-	};
-	opaquePsoDesc.DS =
-	{
-		reinterpret_cast<BYTE*>(mShaders["tessDS"]->GetBufferPointer()),
-		mShaders["tessDS"]->GetBufferSize()
-	};
-	opaquePsoDesc.PS = 
-	{ 
-		reinterpret_cast<BYTE*>(mShaders["tessPS"]->GetBufferPointer()),
-		mShaders["tessPS"]->GetBufferSize()
-	};
+	opaquePsoDesc.VS = get_bytecode(shader_data["tessVS"]);
+	opaquePsoDesc.HS = get_bytecode(shader_data["tessHS"]);
+	opaquePsoDesc.DS = get_bytecode(shader_data["tessDS"]);
+	opaquePsoDesc.PS = get_bytecode(shader_data["tessPS"]);
+
 	opaquePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 	opaquePsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
 	opaquePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
@@ -733,7 +692,6 @@ void BasicTessellationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, c
     UINT matCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(MaterialConstants));
 
 	auto objectCB = mCurrFrameResource->ObjectCB->Resource();
-	auto matCB = mCurrFrameResource->MaterialCB->Resource();
 
     // For each render item...
     for(size_t i = 0; i < ritems.size(); ++i)
@@ -748,11 +706,9 @@ void BasicTessellationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, c
 		tex.Offset(ri->Mat->DiffuseSrvHeapIndex, mCbvSrvDescriptorSize);
 
         D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objectCB->GetGPUVirtualAddress() + ri->ObjCBIndex*objCBByteSize;
-		D3D12_GPU_VIRTUAL_ADDRESS matCBAddress = matCB->GetGPUVirtualAddress() + ri->Mat->MatCBIndex*matCBByteSize;
 
 		cmdList->SetGraphicsRootDescriptorTable(0, tex);
         cmdList->SetGraphicsRootConstantBufferView(1, objCBAddress);
-        cmdList->SetGraphicsRootConstantBufferView(3, matCBAddress);
 
         cmdList->DrawIndexedInstanced(ri->IndexCount, 1, ri->StartIndexLocation, ri->BaseVertexLocation, 0);
     }
